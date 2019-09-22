@@ -20,6 +20,7 @@ import (
 	"github.com/fatedier/beego/logs"
 )
 
+// Log is the under log object
 var Log *logs.BeeLogger
 
 func init() {
@@ -28,21 +29,27 @@ func init() {
 	Log.SetLogFuncCallDepth(Log.GetLogFuncCallDepth() + 1)
 }
 
-func InitLog(logWay string, logFile string, logLevel string, maxdays int64) {
-	SetLogFile(logWay, logFile, maxdays)
+func InitLog(logWay string, logFile string, logLevel string, maxdays int64, disableLogColor bool) {
+	SetLogFile(logWay, logFile, maxdays, disableLogColor)
 	SetLogLevel(logLevel)
 }
 
+// SetLogFile to configure log params
 // logWay: file or console
-func SetLogFile(logWay string, logFile string, maxdays int64) {
+func SetLogFile(logWay string, logFile string, maxdays int64, disableLogColor bool) {
 	if logWay == "console" {
-		Log.SetLogger("console", "")
+		params := ""
+		if disableLogColor {
+			params = fmt.Sprintf(`{"color": false}`)
+		}
+		Log.SetLogger("console", params)
 	} else {
 		params := fmt.Sprintf(`{"filename": "%s", "maxdays": %d}`, logFile, maxdays)
 		Log.SetLogger("file", params)
 	}
 }
 
+// SetLogLevel set log level, default is warning
 // value: error, warning, info, debug, trace
 func SetLogLevel(logLevel string) {
 	level := 4 // warning
@@ -85,7 +92,7 @@ func Trace(format string, v ...interface{}) {
 	Log.Trace(format, v...)
 }
 
-// Logger
+// Logger is the log interface
 type Logger interface {
 	AddLogPrefix(string)
 	GetPrefixStr() string
