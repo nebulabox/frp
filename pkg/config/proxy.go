@@ -16,13 +16,15 @@ package config
 
 import (
 	"fmt"
+	"net"
 	"reflect"
+	"strconv"
 	"strings"
+
+	"gopkg.in/ini.v1"
 
 	"github.com/fatedier/frp/pkg/consts"
 	"github.com/fatedier/frp/pkg/msg"
-
-	"gopkg.in/ini.v1"
 )
 
 // Proxy
@@ -372,7 +374,7 @@ func (cfg *BaseProxyConf) decorate(prefix string, name string, section *ini.Sect
 	}
 
 	if cfg.HealthCheckType == "http" && cfg.Plugin == "" && cfg.HealthCheckURL != "" {
-		s := fmt.Sprintf("http://%s:%d", cfg.LocalIP, cfg.LocalPort)
+		s := "http://" + net.JoinHostPort(cfg.LocalIP, strconv.Itoa(cfg.LocalPort))
 		if !strings.HasPrefix(cfg.HealthCheckURL, "/") {
 			s += "/"
 		}
@@ -415,10 +417,6 @@ func (cfg *BaseProxyConf) checkForCli() (err error) {
 	if err = cfg.HealthCheckConf.checkForCli(); err != nil {
 		return
 	}
-	return nil
-}
-
-func (cfg *BaseProxyConf) checkForSvr(conf ServerCommonConf) error {
 	return nil
 }
 

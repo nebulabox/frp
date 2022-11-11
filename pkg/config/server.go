@@ -18,12 +18,12 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/go-playground/validator/v10"
+	"gopkg.in/ini.v1"
+
 	"github.com/fatedier/frp/pkg/auth"
 	plugin "github.com/fatedier/frp/pkg/plugin/server"
 	"github.com/fatedier/frp/pkg/util/util"
-
-	"github.com/go-playground/validator/v10"
-	"gopkg.in/ini.v1"
 )
 
 // ServerCommonConf contains information for a server service. It is
@@ -74,6 +74,17 @@ type ServerCommonConf struct {
 	// value is 0, the dashboard will not be started. By default, this value is
 	// 0.
 	DashboardPort int `ini:"dashboard_port" json:"dashboard_port" validate:"gte=0,lte=65535"`
+	// DashboardTLSCertFile specifies the path of the cert file that the server will
+	// load. If "dashboard_tls_cert_file", "dashboard_tls_key_file" are valid, the server will use this
+	// supplied tls configuration.
+	DashboardTLSCertFile string `ini:"dashboard_tls_cert_file" json:"dashboard_tls_cert_file"`
+	// DashboardTLSKeyFile specifies the path of the secret key that the server will
+	// load. If "dashboard_tls_cert_file", "dashboard_tls_key_file" are valid, the server will use this
+	// supplied tls configuration.
+	DashboardTLSKeyFile string `ini:"dashboard_tls_key_file" json:"dashboard_tls_key_file"`
+	// DashboardTLSMode specifies the mode of the dashboard between HTTP or HTTPS modes. By
+	// default, this value is false, which is HTTP mode.
+	DashboardTLSMode bool `ini:"dashboard_tls_mode" json:"dashboard_tls_mode"`
 	// DashboardUser specifies the username that the dashboard will use for
 	// login.
 	DashboardUser string `ini:"dashboard_user" json:"dashboard_user"`
@@ -225,7 +236,6 @@ func GetDefaultServerConf() ServerCommonConf {
 }
 
 func UnmarshalServerConfFromIni(source interface{}) (ServerCommonConf, error) {
-
 	f, err := ini.LoadSources(ini.LoadOptions{
 		Insensitive:         false,
 		InsensitiveSections: false,
@@ -297,6 +307,23 @@ func (cfg *ServerCommonConf) Complete() {
 }
 
 func (cfg *ServerCommonConf) Validate() error {
+	if !cfg.DashboardTLSMode {
+		if cfg.DashboardTLSCertFile != "" {
+			fmt.Println("WARNING! dashboard_tls_cert_file is invalid when dashboard_tls_mode is false")
+		}
+
+		if cfg.DashboardTLSKeyFile != "" {
+			fmt.Println("WARNING! dashboard_tls_key_file is invalid when dashboard_tls_mode is false")
+		}
+	} else {
+		if cfg.DashboardTLSCertFile == "" {
+			return fmt.Errorf("ERROR! dashboard_tls_cert_file must be specified when dashboard_tls_mode is true")
+		}
+
+		if cfg.DashboardTLSKeyFile == "" {
+			return fmt.Errorf("ERROR! dashboard_tls_cert_file must be specified when dashboard_tls_mode is true")
+		}
+	}
 	return validator.New().Struct(cfg)
 }
 
