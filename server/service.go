@@ -28,6 +28,7 @@ import (
 
 	"github.com/fatedier/golib/net/mux"
 	fmux "github.com/hashicorp/yamux"
+	quic "github.com/quic-go/quic-go"
 
 	"github.com/fatedier/frp/assets"
 	"github.com/fatedier/frp/pkg/auth"
@@ -68,6 +69,9 @@ type Service struct {
 	// Accept connections using kcp
 	kcpListener net.Listener
 
+	// Accept connections using quic
+	quicListener quic.Listener
+
 	// Accept connections using websocket
 	websocketListener net.Listener
 
@@ -95,6 +99,11 @@ type Service struct {
 	tlsConfig *tls.Config
 
 	cfg config.ServerCommonConf
+
+	// service context
+	ctx context.Context
+	// call cancel to stop service
+	cancel context.CancelFunc
 }
 
 func NewService(cfg config.ServerCommonConf) (svr *Service, err error) {
@@ -106,6 +115,7 @@ func NewService(cfg config.ServerCommonConf) (svr *Service, err error) {
 		return
 	}
 
+	ctx, cancel := context.WithCancel(context.Background())
 	svr = &Service{
 		ctlManager:    NewControlManager(),
 		pxyManager:    proxy.NewManager(),
@@ -119,6 +129,8 @@ func NewService(cfg config.ServerCommonConf) (svr *Service, err error) {
 		authVerifier:    auth.NewAuthVerifier(cfg.ServerConfig),
 		tlsConfig:       tlsConfig,
 		cfg:             cfg,
+		ctx:             ctx,
+		cancel:          cancel,
 	}
 
 	// Create tcpmux httpconnect multiplexer.
@@ -200,10 +212,26 @@ func NewService(cfg config.ServerCommonConf) (svr *Service, err error) {
 		address := net.JoinHostPort(cfg.BindAddr, strconv.Itoa(cfg.KCPBindPort))
 		svr.kcpListener, err = frpNet.ListenKcp(address)
 		if err != nil {
-			err = fmt.Errorf("listen on kcp address udp %s error: %v", address, err)
+			err = fmt.Errorf("listen on kcp udp address %s error: %v", address, err)
 			return
 		}
 		log.Info("frps kcp listen on udp %s", address)
+	}
+
+	if cfg.QUICBindPort > 0 {
+		address := net.JoinHostPort(cfg.BindAddr, strconv.Itoa(cfg.QUICBindPort))
+		quicTLSCfg := tlsConfig.Clone()
+		quicTLSCfg.NextProtos = []string{"frp"}
+		svr.quicListener, err = quic.ListenAddr(address, quicTLSCfg, &quic.Config{
+			MaxIdleTimeout:     time.Duration(cfg.QUICMaxIdleTimeout) * time.Second,
+			MaxIncomingStreams: int64(cfg.QUICMaxIncomingStreams),
+			KeepAlivePeriod:    time.Duration(cfg.QUICKeepalivePeriod) * time.Second,
+		})
+		if err != nil {
+			err = fmt.Errorf("listen on quic udp address %s error: %v", address, err)
+			return
+		}
+		log.Info("frps quic listen on quic %s", address)
 	}
 
 	// Listen for accepting connections from client using websocket protocol.
@@ -270,17 +298,12 @@ func NewService(cfg config.ServerCommonConf) (svr *Service, err error) {
 	})
 
 	// Create nat hole controller.
-	if cfg.BindUDPPort > 0 {
-		var nc *nathole.Controller
-		address := net.JoinHostPort(cfg.BindAddr, strconv.Itoa(cfg.BindUDPPort))
-		nc, err = nathole.NewController(address)
-		if err != nil {
-			err = fmt.Errorf("create nat hole controller error, %v", err)
-			return
-		}
-		svr.rc.NatHoleController = nc
-		log.Info("nat hole udp service listen on %s", address)
+	nc, err := nathole.NewController(time.Duration(cfg.NatHoleAnalysisDataReserveHours) * time.Hour)
+	if err != nil {
+		err = fmt.Errorf("create nat hole controller error, %v", err)
+		return
 	}
+	svr.rc.NatHoleController = nc
 
 	var statsEnable bool
 	// Create dashboard web server.
@@ -307,17 +330,41 @@ func NewService(cfg config.ServerCommonConf) (svr *Service, err error) {
 }
 
 func (svr *Service) Run() {
-	if svr.rc.NatHoleController != nil {
-		go svr.rc.NatHoleController.Run()
-	}
-	if svr.cfg.KCPBindPort > 0 {
+	if svr.kcpListener != nil {
 		go svr.HandleListener(svr.kcpListener)
 	}
-
+	if svr.quicListener != nil {
+		go svr.HandleQUICListener(svr.quicListener)
+	}
 	go svr.HandleListener(svr.websocketListener)
 	go svr.HandleListener(svr.tlsListener)
 
+	if svr.rc.NatHoleController != nil {
+		go svr.rc.NatHoleController.CleanWorker(svr.ctx)
+	}
 	svr.HandleListener(svr.listener)
+}
+
+func (svr *Service) Close() error {
+	if svr.kcpListener != nil {
+		svr.kcpListener.Close()
+	}
+	if svr.quicListener != nil {
+		svr.quicListener.Close()
+	}
+	if svr.websocketListener != nil {
+		svr.websocketListener.Close()
+	}
+	if svr.tlsListener != nil {
+		svr.tlsListener.Close()
+	}
+	if svr.listener != nil {
+		svr.listener.Close()
+	}
+	svr.cancel()
+
+	svr.ctlManager.Close()
+	return nil
 }
 
 func (svr *Service) handleConnection(ctx context.Context, conn net.Conn) {
@@ -434,6 +481,29 @@ func (svr *Service) HandleListener(l net.Listener) {
 				svr.handleConnection(ctx, frpConn)
 			}
 		}(ctx, c)
+	}
+}
+
+func (svr *Service) HandleQUICListener(l quic.Listener) {
+	// Listen for incoming connections from client.
+	for {
+		c, err := l.Accept(context.Background())
+		if err != nil {
+			log.Warn("QUICListener for incoming connections from client closed")
+			return
+		}
+		// Start a new goroutine to handle connection.
+		go func(ctx context.Context, frpConn quic.Connection) {
+			for {
+				stream, err := frpConn.AcceptStream(context.Background())
+				if err != nil {
+					log.Debug("Accept new quic mux stream error: %v", err)
+					_ = frpConn.CloseWithError(0, "")
+					return
+				}
+				go svr.handleConnection(ctx, frpNet.QuicStreamToNetConn(stream, frpConn))
+			}
+		}(context.Background(), c)
 	}
 }
 
