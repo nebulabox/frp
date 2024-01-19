@@ -1,4 +1,6 @@
 #!/usr/bin/env sh
+# ==>> Version change version.go
+# 
 pwd
 go version
 set -x
