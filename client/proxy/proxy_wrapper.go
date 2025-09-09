@@ -31,6 +31,7 @@ import (
 	"github.com/fatedier/frp/pkg/msg"
 	"github.com/fatedier/frp/pkg/transport"
 	"github.com/fatedier/frp/pkg/util/xlog"
+	"github.com/fatedier/frp/pkg/vnet"
 )
 
 const (
@@ -73,6 +74,8 @@ type Wrapper struct {
 	handler event.Handler
 
 	msgTransporter transport.MessageTransporter
+	// vnet controller
+	vnetController *vnet.Controller
 
 	health           uint32
 	lastSendStartMsg time.Time
@@ -91,6 +94,7 @@ func NewWrapper(
 	clientCfg *v1.ClientCommonConfig,
 	eventHandler event.Handler,
 	msgTransporter transport.MessageTransporter,
+	vnetController *vnet.Controller,
 ) *Wrapper {
 	baseInfo := cfg.GetBaseConfig()
 	xl := xlog.FromContextSafe(ctx).Spawn().AppendPrefix(baseInfo.Name)
@@ -105,6 +109,7 @@ func NewWrapper(
 		healthNotifyCh: make(chan struct{}),
 		handler:        eventHandler,
 		msgTransporter: msgTransporter,
+		vnetController: vnetController,
 		xl:             xl,
 		ctx:            xlog.NewContext(ctx, xl),
 	}
@@ -114,10 +119,10 @@ func NewWrapper(
 		addr := net.JoinHostPort(baseInfo.LocalIP, strconv.Itoa(baseInfo.LocalPort))
 		pw.monitor = health.NewMonitor(pw.ctx, baseInfo.HealthCheck, addr,
 			pw.statusNormalCallback, pw.statusFailedCallback)
-		xl.Trace("enable health check monitor")
+		xl.Tracef("enable health check monitor")
 	}
 
-	pw.pxy = NewProxy(pw.ctx, pw.Cfg, clientCfg, pw.msgTransporter)
+	pw.pxy = NewProxy(pw.ctx, pw.Cfg, clientCfg, pw.msgTransporter, pw.vnetController)
 	return pw
 }
 
@@ -137,7 +142,7 @@ func (pw *Wrapper) SetRunningStatus(remoteAddr string, respErr string) error {
 		pw.Phase = ProxyPhaseStartErr
 		pw.Err = respErr
 		pw.lastStartErr = time.Now()
-		return fmt.Errorf(pw.Err)
+		return fmt.Errorf("%s", pw.Err)
 	}
 
 	if err := pw.pxy.Run(); err != nil {
@@ -197,7 +202,7 @@ func (pw *Wrapper) checkWorker() {
 				(pw.Phase == ProxyPhaseWaitStart && now.After(pw.lastSendStartMsg.Add(waitResponseTimeout))) ||
 				(pw.Phase == ProxyPhaseStartErr && now.After(pw.lastStartErr.Add(startErrTimeout))) {
 
-				xl.Trace("change status from [%s] to [%s]", pw.Phase, ProxyPhaseWaitStart)
+				xl.Tracef("change status from [%s] to [%s]", pw.Phase, ProxyPhaseWaitStart)
 				pw.Phase = ProxyPhaseWaitStart
 
 				var newProxyMsg msg.NewProxy
@@ -212,7 +217,7 @@ func (pw *Wrapper) checkWorker() {
 			pw.mu.Lock()
 			if pw.Phase == ProxyPhaseRunning || pw.Phase == ProxyPhaseWaitStart {
 				pw.close()
-				xl.Trace("change status from [%s] to [%s]", pw.Phase, ProxyPhaseCheckFailed)
+				xl.Tracef("change status from [%s] to [%s]", pw.Phase, ProxyPhaseCheckFailed)
 				pw.Phase = ProxyPhaseCheckFailed
 			}
 			pw.mu.Unlock()
@@ -236,7 +241,7 @@ func (pw *Wrapper) statusNormalCallback() {
 		default:
 		}
 	})
-	xl.Info("health check success")
+	xl.Infof("health check success")
 }
 
 func (pw *Wrapper) statusFailedCallback() {
@@ -248,7 +253,7 @@ func (pw *Wrapper) statusFailedCallback() {
 		default:
 		}
 	})
-	xl.Info("health check failed")
+	xl.Infof("health check failed")
 }
 
 func (pw *Wrapper) InWorkConn(workConn net.Conn, m *msg.StartWorkConn) {
@@ -257,7 +262,7 @@ func (pw *Wrapper) InWorkConn(workConn net.Conn, m *msg.StartWorkConn) {
 	pxy := pw.pxy
 	pw.mu.RUnlock()
 	if pxy != nil && pw.Phase == ProxyPhaseRunning {
-		xl.Debug("start a new work connection, localAddr: %s remoteAddr: %s", workConn.LocalAddr().String(), workConn.RemoteAddr().String())
+		xl.Debugf("start a new work connection, localAddr: %s remoteAddr: %s", workConn.LocalAddr().String(), workConn.RemoteAddr().String())
 		go pxy.InWorkConn(workConn, m)
 	} else {
 		workConn.Close()

@@ -19,6 +19,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"os"
 	"runtime"
 	"sync"
 	"time"
@@ -36,10 +37,17 @@ import (
 	"github.com/fatedier/frp/pkg/util/version"
 	"github.com/fatedier/frp/pkg/util/wait"
 	"github.com/fatedier/frp/pkg/util/xlog"
+	"github.com/fatedier/frp/pkg/vnet"
 )
 
 func init() {
 	crypto.DefaultSalt = "frp"
+	// Disable quic-go's receive buffer warning.
+	os.Setenv("QUIC_GO_DISABLE_RECEIVE_BUFFER_WARNING", "true")
+	// Disable quic-go's ECN support by default. It may cause issues on certain operating systems.
+	if os.Getenv("QUIC_GO_DISABLE_ECN") == "" {
+		os.Setenv("QUIC_GO_DISABLE_ECN", "true")
+	}
 }
 
 type cancelErr struct {
@@ -80,13 +88,16 @@ type ServiceOptions struct {
 }
 
 // setServiceOptionsDefault sets the default values for ServiceOptions.
-func setServiceOptionsDefault(options *ServiceOptions) {
+func setServiceOptionsDefault(options *ServiceOptions) error {
 	if options.Common != nil {
-		options.Common.Complete()
+		if err := options.Common.Complete(); err != nil {
+			return err
+		}
 	}
 	if options.ConnectorCreator == nil {
 		options.ConnectorCreator = NewConnector
 	}
+	return nil
 }
 
 // Service is the client service that connects to frps and provides proxy services.
@@ -102,6 +113,8 @@ type Service struct {
 
 	// web server for admin UI and apis
 	webServer *httppkg.Server
+
+	vnetController *vnet.Controller
 
 	cfgMu       sync.RWMutex
 	common      *v1.ClientCommonConfig
@@ -124,7 +137,9 @@ type Service struct {
 }
 
 func NewService(options ServiceOptions) (*Service, error) {
-	setServiceOptionsDefault(&options)
+	if err := setServiceOptionsDefault(&options); err != nil {
+		return nil, err
+	}
 
 	var webServer *httppkg.Server
 	if options.Common.WebServer.Port > 0 {
@@ -149,6 +164,9 @@ func NewService(options ServiceOptions) (*Service, error) {
 	if webServer != nil {
 		webServer.RouteRegister(s.registerRouteHandlers)
 	}
+	if options.Common.VirtualNet.Address != "" {
+		s.vnetController = vnet.NewController(options.Common.VirtualNet)
+	}
 	return s, nil
 }
 
@@ -162,6 +180,28 @@ func (svr *Service) Run(ctx context.Context) error {
 		netpkg.SetDefaultDNSAddress(svr.common.DNSServer)
 	}
 
+	if svr.vnetController != nil {
+		if err := svr.vnetController.Init(); err != nil {
+			log.Errorf("init virtual network controller error: %v", err)
+			return err
+		}
+		go func() {
+			log.Infof("virtual network controller start...")
+			if err := svr.vnetController.Run(); err != nil {
+				log.Warnf("virtual network controller exit with error: %v", err)
+			}
+		}()
+	}
+
+	if svr.webServer != nil {
+		go func() {
+			log.Infof("admin server listen on %s", svr.webServer.Address())
+			if err := svr.webServer.Run(); err != nil {
+				log.Warnf("admin server exit with error: %v", err)
+			}
+		}()
+	}
+
 	// first login to frps
 	svr.loopLoginUntilSuccess(10*time.Second, lo.FromPtr(svr.common.LoginFailExit))
 	if svr.ctl == nil {
@@ -172,14 +212,6 @@ func (svr *Service) Run(ctx context.Context) error {
 
 	go svr.keepControllerWorking()
 
-	if svr.webServer != nil {
-		go func() {
-			log.Info("admin server listen on %s", svr.webServer.Address())
-			if err := svr.webServer.Run(); err != nil {
-				log.Warn("admin server exit with error: %v", err)
-			}
-		}()
-	}
 	<-svr.ctx.Done()
 	svr.stop()
 	return nil
@@ -269,14 +301,14 @@ func (svr *Service) login() (conn net.Conn, connector Connector, err error) {
 
 	if loginRespMsg.Error != "" {
 		err = fmt.Errorf("%s", loginRespMsg.Error)
-		xl.Error("%s", loginRespMsg.Error)
+		xl.Errorf("%s", loginRespMsg.Error)
 		return
 	}
 
 	svr.runID = loginRespMsg.RunID
 	xl.AddPrefix(xlog.LogPrefix{Name: "runID", Value: svr.runID})
 
-	xl.Info("login to server success, get run id [%s]", loginRespMsg.RunID)
+	xl.Infof("login to server success, get run id [%s]", loginRespMsg.RunID)
 	return
 }
 
@@ -284,10 +316,10 @@ func (svr *Service) loopLoginUntilSuccess(maxInterval time.Duration, firstLoginE
 	xl := xlog.FromContextSafe(svr.ctx)
 
 	loginFunc := func() (bool, error) {
-		xl.Info("try to connect to server...")
+		xl.Infof("try to connect to server...")
 		conn, connector, err := svr.login()
 		if err != nil {
-			xl.Warn("connect to server error: %v", err)
+			xl.Warnf("connect to server error: %v", err)
 			if firstLoginExit {
 				svr.cancel(cancelErr{Err: err})
 			}
@@ -298,22 +330,22 @@ func (svr *Service) loopLoginUntilSuccess(maxInterval time.Duration, firstLoginE
 		proxyCfgs := svr.proxyCfgs
 		visitorCfgs := svr.visitorCfgs
 		svr.cfgMu.RUnlock()
-		connEncrypted := true
-		if svr.clientSpec != nil && svr.clientSpec.Type == "ssh-tunnel" {
-			connEncrypted = false
-		}
+
+		connEncrypted := svr.clientSpec == nil || svr.clientSpec.Type != "ssh-tunnel"
+
 		sessionCtx := &SessionContext{
-			Common:        svr.common,
-			RunID:         svr.runID,
-			Conn:          conn,
-			ConnEncrypted: connEncrypted,
-			AuthSetter:    svr.authSetter,
-			Connector:     connector,
+			Common:         svr.common,
+			RunID:          svr.runID,
+			Conn:           conn,
+			ConnEncrypted:  connEncrypted,
+			AuthSetter:     svr.authSetter,
+			Connector:      connector,
+			VnetController: svr.vnetController,
 		}
 		ctl, err := NewControl(svr.ctx, sessionCtx)
 		if err != nil {
 			conn.Close()
-			xl.Error("NewControl error: %v", err)
+			xl.Errorf("new control error: %v", err)
 			return false, err
 		}
 		ctl.SetInWorkConnCallback(svr.handleWorkConnCb)
@@ -371,20 +403,37 @@ func (svr *Service) stop() {
 		svr.ctl.GracefulClose(svr.gracefulShutdownDuration)
 		svr.ctl = nil
 	}
+	if svr.webServer != nil {
+		svr.webServer.Close()
+		svr.webServer = nil
+	}
 }
 
-// TODO(fatedier): Use StatusExporter to provide query interfaces instead of directly using methods from the Service.
-func (svr *Service) GetProxyStatus(name string) (*proxy.WorkingStatus, error) {
+func (svr *Service) getProxyStatus(name string) (*proxy.WorkingStatus, bool) {
 	svr.ctlMu.RLock()
 	ctl := svr.ctl
 	svr.ctlMu.RUnlock()
 
 	if ctl == nil {
-		return nil, fmt.Errorf("control is not running")
+		return nil, false
 	}
-	ws, ok := ctl.pm.GetProxyStatus(name)
-	if !ok {
-		return nil, fmt.Errorf("proxy [%s] is not found", name)
+	return ctl.pm.GetProxyStatus(name)
+}
+
+func (svr *Service) StatusExporter() StatusExporter {
+	return &statusExporterImpl{
+		getProxyStatusFunc: svr.getProxyStatus,
 	}
-	return ws, nil
+}
+
+type StatusExporter interface {
+	GetProxyStatus(name string) (*proxy.WorkingStatus, bool)
+}
+
+type statusExporterImpl struct {
+	getProxyStatusFunc func(name string) (*proxy.WorkingStatus, bool)
+}
+
+func (s *statusExporterImpl) GetProxyStatus(name string) (*proxy.WorkingStatus, bool) {
+	return s.getProxyStatusFunc(name)
 }

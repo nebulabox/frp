@@ -14,11 +14,10 @@
 
 //go:build !frps
 
-package plugin
+package client
 
 import (
-	"io"
-	"net"
+	"context"
 	"net/http"
 	"time"
 
@@ -39,7 +38,7 @@ type StaticFilePlugin struct {
 	s *http.Server
 }
 
-func NewStaticFilePlugin(options v1.ClientPluginOptions) (Plugin, error) {
+func NewStaticFilePlugin(_ PluginContext, options v1.ClientPluginOptions) (Plugin, error) {
 	opts := options.(*v1.StaticFilePluginOptions)
 
 	listener := NewProxyListener()
@@ -60,7 +59,8 @@ func NewStaticFilePlugin(options v1.ClientPluginOptions) (Plugin, error) {
 	router.Use(netpkg.NewHTTPAuthMiddleware(opts.HTTPUser, opts.HTTPPassword).SetAuthFailDelay(200 * time.Millisecond).Middleware)
 	router.PathPrefix(prefix).Handler(netpkg.MakeHTTPGzipHandler(http.StripPrefix(prefix, http.FileServer(http.Dir(opts.LocalPath))))).Methods("GET")
 	sp.s = &http.Server{
-		Handler: router,
+		Handler:           router,
+		ReadHeaderTimeout: 60 * time.Second,
 	}
 	go func() {
 		_ = sp.s.Serve(listener)
@@ -68,8 +68,8 @@ func NewStaticFilePlugin(options v1.ClientPluginOptions) (Plugin, error) {
 	return sp, nil
 }
 
-func (sp *StaticFilePlugin) Handle(conn io.ReadWriteCloser, realConn net.Conn, _ *ExtraInfo) {
-	wrapConn := netpkg.WrapReadWriteCloserToConn(conn, realConn)
+func (sp *StaticFilePlugin) Handle(_ context.Context, connInfo *ConnectionInfo) {
+	wrapConn := netpkg.WrapReadWriteCloserToConn(connInfo.Conn, connInfo.UnderlyingConn)
 	_ = sp.l.PutConn(wrapConn)
 }
 

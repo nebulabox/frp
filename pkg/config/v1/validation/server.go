@@ -16,6 +16,7 @@ package validation
 
 import (
 	"fmt"
+	"slices"
 
 	"github.com/samber/lo"
 
@@ -27,11 +28,23 @@ func ValidateServerConfig(c *v1.ServerConfig) (Warning, error) {
 		warnings Warning
 		errs     error
 	)
-	if !lo.Contains(SupportedAuthMethods, c.Auth.Method) {
+	if !slices.Contains(SupportedAuthMethods, c.Auth.Method) {
 		errs = AppendError(errs, fmt.Errorf("invalid auth method, optional values are %v", SupportedAuthMethods))
 	}
 	if !lo.Every(SupportedAuthAdditionalScopes, c.Auth.AdditionalScopes) {
 		errs = AppendError(errs, fmt.Errorf("invalid auth additional scopes, optional values are %v", SupportedAuthAdditionalScopes))
+	}
+
+	// Validate token/tokenSource mutual exclusivity
+	if c.Auth.Token != "" && c.Auth.TokenSource != nil {
+		errs = AppendError(errs, fmt.Errorf("cannot specify both auth.token and auth.tokenSource"))
+	}
+
+	// Validate tokenSource if specified
+	if c.Auth.TokenSource != nil {
+		if err := c.Auth.TokenSource.Validate(); err != nil {
+			errs = AppendError(errs, fmt.Errorf("invalid auth.tokenSource: %v", err))
+		}
 	}
 
 	if err := validateLogConfig(&c.Log); err != nil {

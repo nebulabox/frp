@@ -14,10 +14,11 @@
 
 //go:build !frps
 
-package plugin
+package client
 
 import (
 	"bufio"
+	"context"
 	"encoding/base64"
 	"io"
 	"net"
@@ -44,7 +45,7 @@ type HTTPProxy struct {
 	s *http.Server
 }
 
-func NewHTTPProxyPlugin(options v1.ClientPluginOptions) (Plugin, error) {
+func NewHTTPProxyPlugin(_ PluginContext, options v1.ClientPluginOptions) (Plugin, error) {
 	opts := options.(*v1.HTTPProxyPluginOptions)
 	listener := NewProxyListener()
 
@@ -54,7 +55,8 @@ func NewHTTPProxyPlugin(options v1.ClientPluginOptions) (Plugin, error) {
 	}
 
 	hp.s = &http.Server{
-		Handler: hp,
+		Handler:           hp,
+		ReadHeaderTimeout: 60 * time.Second,
 	}
 
 	go func() {
@@ -67,8 +69,8 @@ func (hp *HTTPProxy) Name() string {
 	return v1.PluginHTTPProxy
 }
 
-func (hp *HTTPProxy) Handle(conn io.ReadWriteCloser, realConn net.Conn, _ *ExtraInfo) {
-	wrapConn := netpkg.WrapReadWriteCloserToConn(conn, realConn)
+func (hp *HTTPProxy) Handle(_ context.Context, connInfo *ConnectionInfo) {
+	wrapConn := netpkg.WrapReadWriteCloserToConn(connInfo.Conn, connInfo.UnderlyingConn)
 
 	sc, rd := libnet.NewSharedConn(wrapConn)
 	firstBytes := make([]byte, 7)

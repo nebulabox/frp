@@ -76,9 +76,11 @@ type WrapReadWriteCloserConn struct {
 	io.ReadWriteCloser
 
 	underConn net.Conn
+
+	remoteAddr net.Addr
 }
 
-func WrapReadWriteCloserToConn(rwc io.ReadWriteCloser, underConn net.Conn) net.Conn {
+func WrapReadWriteCloserToConn(rwc io.ReadWriteCloser, underConn net.Conn) *WrapReadWriteCloserConn {
 	return &WrapReadWriteCloserConn{
 		ReadWriteCloser: rwc,
 		underConn:       underConn,
@@ -92,7 +94,14 @@ func (conn *WrapReadWriteCloserConn) LocalAddr() net.Addr {
 	return (*net.TCPAddr)(nil)
 }
 
+func (conn *WrapReadWriteCloserConn) SetRemoteAddr(addr net.Addr) {
+	conn.remoteAddr = addr
+}
+
 func (conn *WrapReadWriteCloserConn) RemoteAddr() net.Addr {
+	if conn.remoteAddr != nil {
+		return conn.remoteAddr
+	}
 	if conn.underConn != nil {
 		return conn.underConn.RemoteAddr()
 	}
@@ -188,11 +197,11 @@ func (statsConn *StatsConn) Close() (err error) {
 }
 
 type wrapQuicStream struct {
-	quic.Stream
-	c quic.Connection
+	*quic.Stream
+	c *quic.Conn
 }
 
-func QuicStreamToNetConn(s quic.Stream, c quic.Connection) net.Conn {
+func QuicStreamToNetConn(s *quic.Stream, c *quic.Conn) net.Conn {
 	return &wrapQuicStream{
 		Stream: s,
 		c:      c,
@@ -214,7 +223,7 @@ func (conn *wrapQuicStream) RemoteAddr() net.Addr {
 }
 
 func (conn *wrapQuicStream) Close() error {
-	conn.Stream.CancelRead(0)
+	conn.CancelRead(0)
 	return conn.Stream.Close()
 }
 

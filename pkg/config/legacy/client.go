@@ -18,9 +18,9 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 
-	"github.com/samber/lo"
 	"gopkg.in/ini.v1"
 
 	legacyauth "github.com/fatedier/frp/pkg/auth/legacy"
@@ -170,7 +170,7 @@ type ClientCommonConf struct {
 }
 
 // Supported sources including: string(file path), []byte, Reader interface.
-func UnmarshalClientConfFromIni(source interface{}) (ClientCommonConf, error) {
+func UnmarshalClientConfFromIni(source any) (ClientCommonConf, error) {
 	f, err := ini.LoadSources(ini.LoadOptions{
 		Insensitive:         false,
 		InsensitiveSections: false,
@@ -194,7 +194,7 @@ func UnmarshalClientConfFromIni(source interface{}) (ClientCommonConf, error) {
 	}
 
 	common.Metas = GetMapWithoutPrefix(s.KeysHash(), "meta_")
-	common.ClientConfig.OidcAdditionalEndpointParams = GetMapWithoutPrefix(s.KeysHash(), "oidc_additional_")
+	common.OidcAdditionalEndpointParams = GetMapWithoutPrefix(s.KeysHash(), "oidc_additional_")
 
 	return common, nil
 }
@@ -203,7 +203,7 @@ func UnmarshalClientConfFromIni(source interface{}) (ClientCommonConf, error) {
 // otherwise just start proxies in startProxy map
 func LoadAllProxyConfsFromIni(
 	prefix string,
-	source interface{},
+	source any,
 	start []string,
 ) (map[string]ProxyConf, map[string]VisitorConf, error) {
 	f, err := ini.LoadSources(ini.LoadOptions{
@@ -229,10 +229,7 @@ func LoadAllProxyConfsFromIni(
 		startProxy[s] = struct{}{}
 	}
 
-	startAll := true
-	if len(startProxy) > 0 {
-		startAll = false
-	}
+	startAll := len(startProxy) == 0
 
 	// Build template sections from range section And append to ini.File.
 	rangeSections := make([]*ini.Section, 0)
@@ -345,35 +342,19 @@ func copySection(source, target *ini.Section) {
 }
 
 // GetDefaultClientConf returns a client configuration with default values.
+// Note: Some default values here will be set to empty and will be converted to them
+// new configuration through the 'Complete' function to set them as the default
+// values of the new configuration.
 func GetDefaultClientConf() ClientCommonConf {
 	return ClientCommonConf{
 		ClientConfig:              legacyauth.GetDefaultClientConf(),
-		ServerAddr:                "0.0.0.0",
-		ServerPort:                7000,
-		NatHoleSTUNServer:         "stun.easyvoip.com:3478",
-		DialServerTimeout:         10,
-		DialServerKeepAlive:       7200,
-		HTTPProxy:                 os.Getenv("http_proxy"),
-		LogFile:                   "console",
-		LogWay:                    "console",
-		LogLevel:                  "info",
-		LogMaxDays:                3,
-		AdminAddr:                 "127.0.0.1",
-		PoolCount:                 1,
 		TCPMux:                    true,
-		TCPMuxKeepaliveInterval:   60,
 		LoginFailExit:             true,
-		Start:                     make([]string, 0),
 		Protocol:                  "tcp",
-		QUICKeepalivePeriod:       10,
-		QUICMaxIdleTimeout:        30,
-		QUICMaxIncomingStreams:    100000,
+		Start:                     make([]string, 0),
 		TLSEnable:                 true,
 		DisableCustomTLSFirstByte: true,
-		HeartbeatInterval:         30,
-		HeartbeatTimeout:          90,
 		Metas:                     make(map[string]string),
-		UDPPacketSize:             1500,
 		IncludeConfigFiles:        make([]string, 0),
 	}
 }
@@ -399,7 +380,7 @@ func (cfg *ClientCommonConf) Validate() error {
 		}
 	}
 
-	if !lo.Contains([]string{"tcp", "kcp", "quic", "websocket", "wss"}, cfg.Protocol) {
+	if !slices.Contains([]string{"tcp", "kcp", "quic", "websocket", "wss"}, cfg.Protocol) {
 		return fmt.Errorf("invalid protocol")
 	}
 

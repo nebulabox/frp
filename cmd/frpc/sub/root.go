@@ -31,6 +31,7 @@ import (
 	"github.com/fatedier/frp/pkg/config"
 	v1 "github.com/fatedier/frp/pkg/config/v1"
 	"github.com/fatedier/frp/pkg/config/v1/validation"
+	"github.com/fatedier/frp/pkg/featuregate"
 	"github.com/fatedier/frp/pkg/util/log"
 	"github.com/fatedier/frp/pkg/util/version"
 )
@@ -46,7 +47,7 @@ func init() {
 	rootCmd.PersistentFlags().StringVarP(&cfgFile, "config", "c", "./frpc.ini", "config file of frpc")
 	rootCmd.PersistentFlags().StringVarP(&cfgDir, "config_dir", "", "", "config directory, run one frpc service for each file in config directory")
 	rootCmd.PersistentFlags().BoolVarP(&showVersion, "version", "v", false, "version of frpc")
-	rootCmd.PersistentFlags().BoolVarP(&strictConfigMode, "strict_config", "", false, "strict config parsing mode, unknown fields will cause an error")
+	rootCmd.PersistentFlags().BoolVarP(&strictConfigMode, "strict_config", "", true, "strict config parsing mode, unknown fields will cause an errors")
 }
 
 var rootCmd = &cobra.Command{
@@ -97,6 +98,7 @@ func runMultipleClients(cfgDir string) error {
 }
 
 func Execute() {
+	rootCmd.SetGlobalNormalizationFunc(config.WordSepNormalizeFunc)
 	if err := rootCmd.Execute(); err != nil {
 		os.Exit(1)
 	}
@@ -119,6 +121,12 @@ func runClient(cfgFilePath string) error {
 			"please use yaml/json/toml format instead!\n")
 	}
 
+	if len(cfg.FeatureGates) > 0 {
+		if err := featuregate.SetFromMap(cfg.FeatureGates); err != nil {
+			return err
+		}
+	}
+
 	warning, err := validation.ValidateAllClientConfig(cfg, proxyCfgs, visitorCfgs)
 	if warning != nil {
 		fmt.Printf("WARNING: %v\n", warning)
@@ -135,11 +143,11 @@ func startService(
 	visitorCfgs []v1.VisitorConfigurer,
 	cfgFile string,
 ) error {
-	log.InitLog(cfg.Log.To, cfg.Log.Level, cfg.Log.MaxDays, cfg.Log.DisablePrintColor)
+	log.InitLogger(cfg.Log.To, cfg.Log.Level, int(cfg.Log.MaxDays), cfg.Log.DisablePrintColor)
 
 	if cfgFile != "" {
-		log.Info("start frpc service for config file [%s]", cfgFile)
-		defer log.Info("frpc service for config file [%s] stopped", cfgFile)
+		log.Infof("start frpc service for config file [%s]", cfgFile)
+		defer log.Infof("frpc service for config file [%s] stopped", cfgFile)
 	}
 	svr, err := client.NewService(client.ServiceOptions{
 		Common:         cfg,

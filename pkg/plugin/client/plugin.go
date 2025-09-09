@@ -12,9 +12,10 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package plugin
+package client
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"net"
@@ -24,13 +25,18 @@ import (
 	pp "github.com/pires/go-proxyproto"
 
 	v1 "github.com/fatedier/frp/pkg/config/v1"
+	"github.com/fatedier/frp/pkg/vnet"
 )
+
+type PluginContext struct {
+	Name           string
+	VnetController *vnet.Controller
+}
 
 // Creators is used for create plugins to handle connections.
 var creators = make(map[string]CreatorFn)
 
-// params has prefix "plugin_"
-type CreatorFn func(options v1.ClientPluginOptions) (Plugin, error)
+type CreatorFn func(pluginCtx PluginContext, options v1.ClientPluginOptions) (Plugin, error)
 
 func Register(name string, fn CreatorFn) {
 	if _, exist := creators[name]; exist {
@@ -39,23 +45,28 @@ func Register(name string, fn CreatorFn) {
 	creators[name] = fn
 }
 
-func Create(name string, options v1.ClientPluginOptions) (p Plugin, err error) {
-	if fn, ok := creators[name]; ok {
-		p, err = fn(options)
+func Create(pluginName string, pluginCtx PluginContext, options v1.ClientPluginOptions) (p Plugin, err error) {
+	if fn, ok := creators[pluginName]; ok {
+		p, err = fn(pluginCtx, options)
 	} else {
-		err = fmt.Errorf("plugin [%s] is not registered", name)
+		err = fmt.Errorf("plugin [%s] is not registered", pluginName)
 	}
 	return
 }
 
-type ExtraInfo struct {
+type ConnectionInfo struct {
+	Conn           io.ReadWriteCloser
+	UnderlyingConn net.Conn
+
 	ProxyProtocolHeader *pp.Header
+	SrcAddr             net.Addr
+	DstAddr             net.Addr
 }
 
 type Plugin interface {
 	Name() string
 
-	Handle(conn io.ReadWriteCloser, realConn net.Conn, extra *ExtraInfo)
+	Handle(ctx context.Context, connInfo *ConnectionInfo)
 	Close() error
 }
 
