@@ -1,14 +1,14 @@
 #!/usr/bin/env sh
-# ==>> Version change version.go
-# 
+# @@@ ==>> Version change pkg/util/version/version.go
 pwd
 go version
-set -x
+# set -x
 NAME="frpc"
 SRC="./cmd/frpc" 
 rm -rf ./release
+go mod vendor
 # CGO_ENABLED=0 GOOS=darwin GOARCH=amd64 go build                     -ldflags="-w -s" -o release/${NAME}_darwin_amd64 ${SRC}                 
-# CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 go build                     -ldflags="-w -s" -o release/${NAME}_darwin_arm64 ${SRC}                 
+CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 go build                     -ldflags="-w -s" -o release/${NAME}_darwin_arm64 ${SRC}                 
 # CGO_ENABLED=0 GOOS=freebsd GOARCH=386 go build                      -ldflags="-w -s" -o release/${NAME}_freebsd_386 ${SRC}                 
 # CGO_ENABLED=0 GOOS=freebsd GOARCH=amd64 go build                    -ldflags="-w -s" -o release/${NAME}_freebsd_amd64 ${SRC}                 
 CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build                      -ldflags="-w -s" -o release/${NAME}_linux_amd64 ${SRC}                 
@@ -33,8 +33,10 @@ CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build                      -ldflags="-w
 # CGO_ENABLED=0 GOOS=openbsd GOARCH=amd64 go build                    -ldflags="-w -s" -o release/${NAME}_openbsd_amd64 ${SRC}                 
 CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build                    -ldflags="-w -s" -o release/${NAME}_windows_amd64.exe ${SRC}                 
 # CGO_ENABLED=0 GOOS=windows GOARCH=386 go build                      -ldflags="-w -s" -o release/${NAME}_windows_386.exe ${SRC}                 
-# CGO_ENABLED=0 GOOS=windows GOARCH=arm64 go build                    -ldflags="-w -s" -o release/${NAME}_windows_arm64.exe ${SRC}                 
+CGO_ENABLED=0 GOOS=windows GOARCH=arm64 go build                    -ldflags="-w -s" -o release/${NAME}_windows_arm64.exe ${SRC}                 
+
 pushd release
+upx *
 for entry in *
 do
   echo "Packing : ${entry%.*}.tar.xz"
